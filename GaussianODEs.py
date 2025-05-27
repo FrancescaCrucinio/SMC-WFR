@@ -3,6 +3,25 @@ import numpy as np
 def KL(mu, sigma, mu_target, sigma_target):
     return 0.5*np.log(sigma_target/sigma)+(sigma+(mu-mu_target)**2)/(2*sigma_target) - 0.5
 
+### Unit time
+
+def fisherrao_unit_time(mu0, mu, sigma0, sigma, tsteps):
+    mean_eq = np.zeros(tsteps+1)
+    var_eq = np.zeros(tsteps+1)
+    kl_evo = np.zeros(tsteps+1)
+    mean_eq[0] = mu0
+    var_eq[0] = sigma0
+    kl_evo[0] = KL(mu0, sigma0, mu, sigma)
+    A = 1/sigma - 1/sigma0
+    B = mu/sigma - mu0/sigma0    
+    for i in range(tsteps):
+        t = (i+1)/tsteps
+        M = 1/(1+t*sigma0*A)
+        mean_eq[i+1] = M*mu0 + (1-M)*B/A
+        var_eq[i+1] = M*sigma0
+        kl_evo[i+1] = KL(mean_eq[i+1], var_eq[i+1], mu, sigma)
+    return mean_eq, var_eq, kl_evo
+
 ### Infinite time
 
 def wasserstein_infinite_time(mu0, mu, sigma0, sigma, tsteps, gamma):
