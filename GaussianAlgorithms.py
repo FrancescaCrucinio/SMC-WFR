@@ -23,6 +23,16 @@ def SMC_reweigthing(mu, sigma, X, delta):
     logW = delta*(-0.5*(X-mu)**2/sigma+0.5*X**2)
     return rs.exp_and_normalise(logW)
 
+def SMC_ULA_reweighting(mu, sigma, X, Xold, gradient_step, delta, gamma):
+    gradient_step_reverse = X - gamma*(X - mu)/sigma
+    proposal_ratio = (X - gradient_step)**2 - (Xold - gradient_step_reverse)**2
+#     
+#     
+#     norm.pdf(Xold - gradient_step_reverse, loc = 0, scale = np.sqrt(2*gamma))/norm.pdf(X - gradient_step, loc = 0, scale = np.sqrt(2*gamma))
+#     print(np.exp(proposal_ratio)**(1/(2*gamma)))
+    logW = delta*(-0.5*(X-mu)**2/sigma+0.5*X**2) + proposal_ratio
+    return rs.exp_and_normalise(logW)
+
 def SMC_WFR(gamma, Niter, mu, sigma, mu0, sigma0, X0):
     N = X0.size
     X = np.zeros((Niter+1, N))
@@ -39,6 +49,27 @@ def SMC_WFR(gamma, Niter, mu, sigma, mu0, sigma0, X0):
         X[n, :], gradient_step = W_move(mu, sigma, X[n, :], gamma, noise)
         # reweight
         W[n, :] = FR_reweigthing(mu, sigma, X[n, :], gamma, 1-np.exp(-gamma), gradient_step)
+    return X, W
+
+def SMC_ULA(gamma, Niter, mu, sigma, mu0, sigma0, X0):
+    N = X0.size
+    X = np.zeros((Niter+1, N))
+    W = np.zeros((Niter+1, N))
+    X[0, :] = X0
+    W[0, :] = np.ones(N)/N
+    for n in range(1, Niter+1):
+        if (n > 1):
+            # resample
+            ancestors = rs.resampling('stratified', W[n-1, :])
+            X[n-1, :] = X[n-1, ancestors]
+        # MCMC move
+        noise = np.random.normal(size = N)
+#         Xold = np.copy(X[n, :])
+        X[n, :], gradient_step = W_move(mu, sigma, X[n-1, :], gamma, noise)
+        # reweight
+        delta = (1-np.exp(-gamma))*np.exp(-(n-1)*gamma)
+        W[n, :] = SMC_ULA_reweighting(mu, sigma, X[n, :], X[n-1, :], gradient_step, delta, gamma)
+#         W[n, :] = np.ones(N)/N
     return X, W
 
 def SMC_TWFR(gamma, Niter, mu, sigma, mu0, sigma0, X0, lseq, delta):
