@@ -2,6 +2,7 @@ import numpy as np
 from scipy.stats import multivariate_normal
 from scipy import linalg, stats
 from particles import resampling as rs
+from sklearn import metrics
 
 ### utils
 def gradient_4modes(x, ms, Sigmas, weights):
