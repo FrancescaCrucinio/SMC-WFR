@@ -51,11 +51,12 @@ def ParallelMALA(gamma, Niter, ms, Sigmas, weights, X0):
     N = X0.shape[0]
     X = np.zeros((Niter, d, N))
     X[0, :, :] = X0.T
+    accepted = np.zeros((Niter, N))
     for i in range(1, Niter):
         gradient = gradient_mixture(X[i-1, :, :], ms, Sigmas, weights)
         prop = X[i-1, :, :] + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
-        X[i, :, :] = mala_accept_reject(prop, X[i-1, :, :], ms, Sigmas, weights, gamma)
-    return X
+        X[i, :, :], accepted[i, :] = mala_accept_reject(prop, X[i-1, :, :], ms, Sigmas, weights, gamma)
+    return X, accepted
 def mala_accept_reject(prop, v, ms, Sigmas, weights, gamma):
     d = ms[0,:].size
     log_proposal = multivariate_normal.logpdf((v-(prop+gamma*gradient_mixture(prop, ms, Sigmas, weights))).T, np.zeros(d), 2*gamma*np.eye(d))-multivariate_normal.logpdf((prop - (v+gamma*gradient_mixture(v, ms, Sigmas, weights))).T, np.zeros(d), 2*gamma*np.eye(d))
@@ -63,7 +64,7 @@ def mala_accept_reject(prop, v, ms, Sigmas, weights, gamma):
     accepted = np.log(np.random.uniform(size = v.shape[1])) <= log_acceptance
     output = np.copy(v)
     output[:, accepted] = prop[:, accepted]
-    return output
+    return output, accepted
 ### WFR
 
 def SMC_WFR(gamma, Niter, ms, Sigmas, weights, X0):
@@ -147,7 +148,7 @@ def SMC_MALA(gamma, Niter, ms, Sigmas, weights, X0):
         # MCMC move
         gradient_step = X[n-1, :, :] + gamma*gradient_mixture(X[n-1, :, :], ms, Sigmas, weights)
         prop = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-        X[n, :, :] = mala_accept_reject(prop, X[n-1, :, :], ms, Sigmas, weights, gamma)
+        X[n, :, :], _ = mala_accept_reject(prop, X[n-1, :, :], ms, Sigmas, weights, gamma)
         # reweight
         delta = np.exp(-(n-1)*gamma)
         logW = delta*(logpi_mixture(X[n-1, :, :], ms, Sigmas, weights) +0.5*np.sum(X[n-1, :, :]**2, axis = 0)) - delta*np.exp(-gamma)*(logpi_mixture(X[n, :, :], ms, Sigmas, weights) +0.5*np.sum(X[n, :, :]**2, axis = 0))
