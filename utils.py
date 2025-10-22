@@ -67,7 +67,7 @@ def kernel_stein_discrepancy_imq_weighted(samples, scores, weights=None, c=1.0, 
     ksd_squared = np.sum(W * H)
     return np.sqrt(ksd_squared)
 
-def mmd_rbf(X, Y, gamma=1.0, w = None):
+def mmd_rbf(X, Y, gamma=1/8, w = None):
     """MMD using rbf (gaussian) kernel (i.e., k(x,y) = exp(-gamma * ||x-y||^2 / 2))
 
     Arguments:
