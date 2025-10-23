@@ -89,8 +89,8 @@ def SMC_WFR(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0):
 #         H = np.median(pairwise_squared_distances)/(2*np.log(N))*np.eye(d) # median euristic
 #         print(H)
 #         gaussian_convolution = multivariate_normal.pdf(np.kron(X[n, :, :].T, np.ones((N, 1))) - np.tile(gradient_step, N).T, np.zeros(d), H).reshape(N, N)
-        gaussian_convolution = metrics.pairwise.rbf_kernel(X[n, :, :].T, gradient_step.T, 1/(2*gamma))
-        weight_denominator = np.mean(gaussian_convolution, axis = 0)
+        gaussian_convolution = metrics.pairwise.rbf_kernel(X[n, :, :].T, gradient_step.T, 1/(4*gamma))
+        weight_denominator = np.mean(gaussian_convolution, axis = 1)
         logW = (1-np.exp(-gamma))*(logpi_mixture(X[n, :, :], ms, Sigmas, weights)-np.log(weight_denominator))
         W[n, :] = rs.exp_and_normalise(logW)
     return X, W
@@ -179,10 +179,10 @@ def SMC_UnitFR(gamma, Niter, ms, Sigmas, weights, X0):
         if (n > 1):
             # resample
             ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n-1, :, :] = X[n-1, :, ancestors].T
+            X[n, :, :] = X[n-1, :, ancestors].T
         # MCMC move
         prop = rwm_proposal(X[n-1, :, :].T, W[n-1, :]).T
-        X[n, :] = rwm_accept_reject(prop, X[n-1, :, :], ms, Sigmas, weights, l)
+        X[n, :] = rwm_accept_reject(prop, X[n, :, :], ms, Sigmas, weights, l)
         # reweight
         delta = l - lpast
         logW = delta*(0.5*np.sum(X[n, :, :]**2, axis = 0) + logpi_mixture(X[n, :, :], ms, Sigmas, weights))
