@@ -6,22 +6,22 @@ from sklearn import metrics
 
 ### utils
 def gradient_4modes(x, ms, Sigmas, weights):
-    v = x.view(float)
+#     v = x.view(float)
     N = x.shape[0]
-    v.shape = (N, -1)
-    gradient = np.zeros(v.shape)
-    denominator = np.zeros((weights.size, v.shape[1]))
+#     v.shape = (N, -1)
+    gradient = np.zeros(x.shape)
+    denominator = np.zeros((weights.size, x.shape[1]))
     for j in range(weights.size):
-        denominator[j, :] = weights[j]*multivariate_normal.pdf(v.T, ms[j,:], Sigmas[j,:,:])
+        denominator[j, :] = weights[j]*multivariate_normal.pdf(x.T, ms[j,:], Sigmas[j,:,:])
         gradient += -denominator[j, :]*np.matmul(linalg.inv(Sigmas[j,:,:]),(v.T-ms[j,:]).T)
     return gradient/np.sum(denominator, axis = 0)
 def logpi_4modes(x, ms, Sigmas, weights):
-    v = x.view(float)
+#     v = x.view(float)
     N = x.shape[0]
-    v.shape = (N, -1)
-    logpi = np.zeros((weights.size, v.shape[1]))
+#     v.shape = (N, -1)
+    logpi = np.zeros((weights.size, x.shape[1]))
     for j in range(weights.size):
-        logpi[j, :] = weights[j]*multivariate_normal.pdf(v.T, ms[j,:], Sigmas[j,:,:])
+        logpi[j, :] = weights[j]*multivariate_normal.pdf(x.T, ms[j,:], Sigmas[j,:,:])
     return np.log(np.sum(logpi, axis = 0))
 
 ### W
