@@ -134,7 +134,7 @@ def SMC_FR(gamma, Niter, X0, sigma):
         if (n > 1):
             # resample
             ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n-1, :, :] = X[n-1, :, ancestors].T
+            X[n, :, :] = X[n-1, :, ancestors].T
         # MCMC move
         prop = rwm_proposal(X[n-1, :, :].T, W[n-1, :]).T
         X[n, :] = rwm_accept_reject(prop, X[n-1, :, :], l, sigma)
