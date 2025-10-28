@@ -66,7 +66,7 @@ def mala_accept_reject(prop, v, ms, Sigmas, Sigmas_inv, weights, gamma):
     return output, accepted
 ### WFR
 
-def SMC_WFR(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0):
+def SMC_WFR(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, nmcmc):
     d = ms[0,:].size
     N = X0.shape[0]
     X = np.zeros((Niter, d, N))
@@ -79,8 +79,16 @@ def SMC_WFR(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0):
             ancestors = rs.resampling('stratified', W[n-1, :])
             X[n-1, :, :] = X[n-1, :, ancestors].T
         # MCMC move
-        gradient_step = X[n-1, :, :] + gamma*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights)
-        X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
+        if(nmcmc > 1):
+            Xmcmc = np.zeros((nmcmc, d, N))
+            Xmcmc[0, :] = X[n-1, :, :]
+            for j in range(1, nmcmc):
+                gradient_step = Xmcmc[j-1, :] + gamma*gradient_mixture(Xmcmc[j-1, :], ms, Sigmas, Sigmas_inv, weights)
+                Xmcmc[j, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+            X[n, :] = Xmcmc[nmcmc-1, :]
+        else:
+            gradient_step = X[n-1, :, :] + gamma*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights)
+            X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
         # reweight
 #         H = 2*gamma*np.eye(d) #-- original derivation
 #         H = (4/(N*(d+2)))**(2/(d+4))*np.diag(np.var(X[n, :, :], axis = 1)) #-- KDE theory
@@ -119,7 +127,7 @@ def TemperedWFR(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, lseq, delta):
         W[n, :] = rs.exp_and_normalise(logW)
     return X, W
 
-def SMC_ULA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0):
+def SMC_ULA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, nmcmc):
     d = ms[0,:].size
     N = X0.shape[0]
     X = np.zeros((Niter, d, N))
@@ -132,31 +140,51 @@ def SMC_ULA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0):
             ancestors = rs.resampling('stratified', W[n-1, :])
             X[n-1, :, :] = X[n-1, :, ancestors].T
         # MCMC move
-        gradient_step = X[n-1, :, :] + gamma*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights)
-        X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+        if(nmcmc > 1):
+            Xmcmc = np.zeros((nmcmc, d, N))
+            Xmcmc[0, :] = X[n-1, :, :]
+            for j in range(1, nmcmc):
+                gradient_step = Xmcmc[j-1, :] + gamma*gradient_mixture(Xmcmc[j-1, :], ms, Sigmas, Sigmas_inv, weights)
+                Xmcmc[j, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+            X[n, :] = Xmcmc[nmcmc-1, :]
+        else:
+            gradient_step = X[n-1, :, :] + gamma*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights)
+            X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
         # reweight
         delta = (1-np.exp(-gamma))*np.exp(-(n-1)*gamma)
         logW = delta*(logpi_mixture(X[n, :, :], ms, Sigmas, weights) +0.5*np.sum(X[n, :, :]**2, axis = 0))
         W[n, :] = rs.exp_and_normalise(logW)
     return X, W
 
-def SMC_MALA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0):
+def SMC_MALA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, nmcmc):
     d = ms[0,:].size
     N = X0.shape[0]
     X = np.zeros((Niter, d, N))
     X[0,:,:] = X0.T
     W = np.zeros((Niter, N))
     W[0, :] = np.ones(N)/N
-    accepted = np.zeros((Niter, N))
+    if(nmcmc > 1):
+        accepted = np.zeros((Niter, N, nmcmc-1))
+    else:
+        accepted = np.zeros((Niter, N))
     for n in range(1, Niter):
         if (n > 1):
             # resample
             ancestors = rs.resampling('stratified', W[n-1, :])
             X[n-1, :, :] = X[n-1, :, ancestors].T
         # MCMC move
-        gradient_step = X[n-1, :, :] + gamma*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights)
-        prop = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-        X[n, :, :], accepted[n, :] = mala_accept_reject(prop, X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights, gamma)
+        if(nmcmc > 1):
+            Xmcmc = np.zeros((nmcmc, d, N))
+            Xmcmc[0, :] = X[n-1, :, :]
+            for j in range(1, nmcmc):
+                gradient_step = Xmcmc[j-1, :] + gamma*gradient_mixture(Xmcmc[j-1, :], ms, Sigmas, Sigmas_inv, weights)
+                prop = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+                Xmcmc[j, :], accepted[n, :, j-1] = mala_accept_reject(prop, Xmcmc[j-1, :], ms, Sigmas, Sigmas_inv, weights, gamma)
+            X[n, :] = Xmcmc[nmcmc-1, :]
+        else:
+            gradient_step = X[n-1, :, :] + gamma*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights)
+            prop = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+            X[n, :, :], accepted[n, :] = mala_accept_reject(prop, X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights, gamma)
         # reweight
         delta = np.exp(-(n-1)*gamma)
         logW = delta*(logpi_mixture(X[n-1, :, :], ms, Sigmas, weights) +0.5*np.sum(X[n-1, :, :]**2, axis = 0)) - delta*np.exp(-gamma)*(logpi_mixture(X[n, :, :], ms, Sigmas, weights) +0.5*np.sum(X[n, :, :]**2, axis = 0))
@@ -164,7 +192,7 @@ def SMC_MALA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0):
     return X, W, accepted
 
 ### FR
-def SMC_UnitFR(gamma, Niter, ms, Sigmas, weights, X0):
+def SMC_UnitFR(gamma, Niter, ms, Sigmas, weights, X0, nmcmc):
     d = ms[0,:].size
     N = X0.shape[0]
     X = np.zeros((Niter, d, N))
@@ -181,8 +209,16 @@ def SMC_UnitFR(gamma, Niter, ms, Sigmas, weights, X0):
             ancestors = rs.resampling('stratified', W[n-1, :])
             X[n, :, :] = X[n-1, :, ancestors].T
         # MCMC move
-        prop = rwm_proposal(X[n-1, :, :].T, W[n-1, :]).T
-        X[n, :] = rwm_accept_reject(prop, X[n, :, :], ms, Sigmas, weights, l)
+        if(nmcmc > 1):
+            Xmcmc = np.zeros((nmcmc, d, N))
+            Xmcmc[0, :] = X[n-1, :, :]
+            for j in range(1, nmcmc):
+                prop = rwm_proposal(Xmcmc[j-1, :].T, W[n-1, :]).T
+                Xmcmc[j, :] = rwm_accept_reject(prop, Xmcmc[j-1, :], ms, Sigmas, weights, l)
+            X[n, :] = Xmcmc[nmcmc-1, :]
+        else:
+            prop = rwm_proposal(X[n-1, :, :].T, W[n-1, :]).T
+            X[n, :] = rwm_accept_reject(prop, X[n-1, :, :], ms, Sigmas, weights, l)
         # reweight
         delta = l - lpast
         logW = delta*(0.5*np.sum(X[n, :, :]**2, axis = 0) + logpi_mixture(X[n, :, :], ms, Sigmas, weights))
