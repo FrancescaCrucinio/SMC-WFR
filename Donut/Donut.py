@@ -2,7 +2,7 @@ import numpy as np
 from scipy.stats import multivariate_normal
 from scipy import linalg, stats
 from particles import resampling as rs
-from scipy.spatial.distance import pdist, squareform
+from scipy.special import logsumexp
 from sklearn import metrics
 from scipy.spatial.distance import cdist
 
@@ -78,10 +78,9 @@ def SMC_WFR(gamma, Niter, ystar, sigma, X0, nmcmc):
         else:
             gradient_step = X[n-1, :, :] + gamma*gradient_donut(X[n-1, :, :], ystar, sigma)
             X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-#         kde_matrix = multivariate_normal.pdf(np.kron(X[n, :, :].T, np.ones((N, 1))) - np.tile(gradient_step, N).T, mean = np.zeros(d), cov = 2*gamma*np.eye(d)).reshape(N, N)
-        kde_matrix =  metrics.pairwise.rbf_kernel(X[n, :, :].T, gradient_step.T, 1/(4*gamma))
-        weight_denominator = np.mean(kde_matrix, axis = 1)
-        logW = (1-np.exp(-gamma))*(logpi_donut(X[n, :, :], ystar, sigma)-np.log(weight_denominator))
+        distSq = -(1.0 / (4 * gamma))*cdist(X[n, :, :].T, gradient_step.T, metric='sqeuclidean')
+        weight_denominator = logsumexp(distSq, axis=1)
+        logW = (1-np.exp(-gamma))*(logpi_donut(X[n, :, :], ystar, sigma)-weight_denominator)
         W[n, :] = rs.exp_and_normalise(logW)
     return X, W
 

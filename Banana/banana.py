@@ -3,7 +3,7 @@ from scipy.stats import multivariate_normal
 from scipy import linalg, stats
 from particles import resampling as rs
 from particles import smc_samplers as ssp
-from scipy.spatial.distance import pdist, squareform
+from scipy.special import logsumexp
 from sklearn import metrics
 from scipy.spatial.distance import cdist
 
@@ -70,15 +70,9 @@ def SMC_WFR(gamma, Niter, X0, sigma, nmcmc):
         else:
             gradient_step = X[n-1, :, :] + gamma*gradient_banana(X[n-1, :, :], sigma)
             X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-#         H = 2*gamma*np.eye(d) #-- original derivation
-#         H = (4/(N*(d+2)))**(2/(d+4))*np.diag(np.var(X[n, :, :], axis = 1)) #-- KDE theory
-#         squared_distances = pdist(X[n, :, :].T)
-#         pairwise_squared_distances = squareform(squared_distances)**2
-#         H = np.median(pairwise_squared_distances)/(2*np.log(N))*np.eye(d) # -- median euristic
-#         kde_matrix = multivariate_normal.pdf(np.kron(X[n, :, :].T, np.ones((N, 1))) - np.tile(gradient_step, N).T, mean = np.zeros(d), cov = 2*gamma*np.eye(d)).reshape(N, N)
-        kde_matrix =  metrics.pairwise.rbf_kernel(X[n, :, :].T, gradient_step.T, 1/(4*gamma))
-        weight_denominator = np.mean(kde_matrix, axis = 1)
-        logW = (1-np.exp(-gamma))*(logpi_banana(X[n, :, :], sigma)-np.log(weight_denominator))
+        distSq = -(1.0 / (4 * gamma))*cdist(X[n, :, :].T, gradient_step.T, metric='sqeuclidean')
+        weight_denominator = logsumexp(distSq, axis=1)
+        logW = (1-np.exp(-gamma))*(logpi_banana(X[n, :, :], sigma)-weight_denominator)
         W[n, :] = rs.exp_and_normalise(logW)
     return X, W
 

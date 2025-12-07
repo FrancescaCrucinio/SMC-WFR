@@ -2,10 +2,12 @@ import numpy as np
 from scipy.stats import norm
 from scipy import linalg, stats, spatial
 from particles import resampling as rs
-
+from scipy.spatial.distance import pdist, squareform
+from sklearn import metrics
+from scipy.spatial.distance import cdist
 
 def FR_reweigthing(mu, sigma, X, gamma, delta, gradient_step):
-    weight_denominator = np.mean(norm.pdf(X - gradient_step.reshape(-1,1), loc = 0, scale = np.sqrt(2*gamma)), axis = 1)
+    weight_denominator = np.mean(norm.pdf(X - gradient_step.reshape(-1,1), loc = 0, scale = np.sqrt(2*gamma)), axis = 0)
     logW = delta*(-0.5*(X-mu)**2/sigma-np.log(weight_denominator))
     return rs.exp_and_normalise(logW)
 
