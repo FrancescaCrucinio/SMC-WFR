@@ -10,159 +10,211 @@ from scipy.spatial.distance import cdist
 
 
 ### Gradient and other utilities
-def gradient_mixture(x, ms, Sigmas, Sigmas_inv, weights):
-    gradient = np.zeros(x.shape)
-    denominator = np.zeros((weights.size, x.shape[1]))
-    for j in range(weights.size):
-        denominator[j, :] = weights[j]*multivariate_normal.pdf(x.T, ms[j,:], Sigmas[j,:,:])
-        gradient += -denominator[j, :]*np.matmul(Sigmas_inv[j,:,:],(x.T-ms[j,:]).T)
-    return gradient/np.sum(denominator, axis = 0)
-def logpi_mixture(x, ms, Sigmas, weights):
-    logpi = np.zeros((weights.size, x.shape[1]))
-    for j in range(weights.size):
-        logpi[j, :] = weights[j]*multivariate_normal.pdf(x.T, ms[j,:], Sigmas[j,:,:])
-    return np.log(np.sum(logpi, axis = 0))
+# def gradient_mixture(x, ms, Sigmas, Sigmas_inv, weights):
+#     gradient = np.zeros(x.shape)
+#     denominator = np.zeros((weights.size, x.shape[1]))
+#     for j in range(weights.size):
+#         denominator[j, :] = weights[j]*multivariate_normal.pdf(x.T, ms[j,:], Sigmas[j,:,:])
+#         gradient += -denominator[j, :]*np.matmul(Sigmas_inv[j,:,:],(x.T-ms[j,:]).T)
+#     return gradient/np.sum(denominator, axis = 0)
+
+
+def gradient_mixture(x, log_w, mus, invcovs, logdets):
+    """
+    x:        (d, N)
+    log_w:    (K,)
+    mus:      (K,d)
+    invcovs:  (K,d,d)
+    logdets:  (K,)
+    returns:  (d, N)
+    """
+    d, N = x.shape
+    K = mus.shape[0]
+
+    # diff: (N,K,d)
+    diff = x.T[:,None,:] - mus[None,:,:]
+
+    quad = np.einsum('nkd,kdj,nkj->nk', diff, invcovs, diff)
+
+    logNk = -0.5 * (d*np.log(2*np.pi) + logdets + quad)
+
+    a = log_w + logNk
+    a -= np.max(a, axis=1, keepdims=True)
+    r = np.exp(a) / np.sum(np.exp(a), axis=1, keepdims=True)   # (N,K)
+
+    comp = -np.einsum('kij,nkj->nki', invcovs, diff)           # (N,K,d)
+
+    score = np.einsum('nk,nkd->nd', r, comp)                  # (N,d)
+
+    return score.T  
+
+# def logpi_mixture(x, ms, Sigmas, weights):
+#     logpi = np.zeros((weights.size, x.shape[1]))
+#     for j in range(weights.size):
+#         logpi[j, :] = weights[j]*multivariate_normal.pdf(x.T, ms[j,:], Sigmas[j,:,:])
+#     return np.log(np.sum(logpi, axis = 0))
+
+
+def logpi_mixture(x, log_w, mus, invcovs):
+    """
+    x:        (d, N)
+    log_w:    (K,)
+    mus:      (K,d)
+    invcovs:  (K,d,d)
+    returns:  (N,) unnormalized log p(x_n)
+    """
+    d, N = x.shape
+    K = mus.shape[0]
+
+    # diff: (N,K,d)
+    diff = x.T[:,None,:] - mus[None,:,:]
+
+    # quadratic form only
+    quad = np.einsum('nkd,kdj,nkj->nk', diff, invcovs, diff)  # (N,K)
+
+    # unnormalized log N_k(x) = -0.5 (x-mu)^T Σ⁻¹ (x-mu)
+    logNk = -0.5 * quad
+
+    # log-sum-exp with mixture weights
+    a = log_w + logNk
+    amax = np.max(a, axis=1, keepdims=True)
+    logp = amax[:,0] + np.log(np.sum(np.exp(a - amax), axis=1))
+
+    return logp
 
 ### ULA
 
-def ParallelULA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0):
+def ParallelULA(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, true_sample, true_cov):
+    log_w = np.log(weights)
     d = ms[0,:].size
     N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    X[0, :, :] = X0.T
+    X = X0.T
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X) - true_cov)**2)
+    for j in range(d):
+        w1[0, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:])
     for i in range(1, Niter):
-        gradient = gradient_mixture(X[i-1, :, :], ms, Sigmas, Sigmas_inv, weights)
-        X[i, :, :] = X[i-1, :, :] + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
-    return X
-def TemperedULA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, lseq):
-    d = ms[0,:].size
-    N = X0.shape[0]
-    X = np.zeros((Niter+1, d, N))
-    X[0, :, :] = X0.T
-    for i in range(1, Niter+1):
-        l = lseq[i-1]
-        gradient = l*gradient_mixture(X[i-1, :, :], ms, Sigmas, weights) - (1-l)*X[i-1, :, :]
-        X[i, :, :] = X[i-1, :, :] + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
-    return X
+        gradient = gradient_mixture(X, log_w, ms, Sigmas_inv, logdets)
+        X = X + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
+        mse_cov[i] = np.mean((np.cov(X) - true_cov)**2)
+        for j in range(d):
+            w1[i, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:])
+    return X, w1, mse_cov
 
-def ParallelMALA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0):
+def ParallelMALA(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, true_sample, true_cov):
+    log_w = np.log(weights)
     d = ms[0,:].size
     N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    X[0, :, :] = X0.T
+    X = X0.T
     accepted = np.zeros((Niter, N))
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X) - true_cov)**2)
+    for j in range(d):
+        w1[0, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:])
     for i in range(1, Niter):
-        gradient = gradient_mixture(X[i-1, :, :], ms, Sigmas, Sigmas_inv, weights)
-        prop = X[i-1, :, :] + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
-        X[i, :, :], accepted[i, :] = mala_accept_reject(prop, X[i-1, :, :], ms, Sigmas, Sigmas_inv, weights, gamma)
-    return X, accepted
-def mala_accept_reject(prop, v, ms, Sigmas, Sigmas_inv, weights, gamma):
+        gradient = gradient_mixture(X, log_w, ms, Sigmas_inv, logdets)
+        prop = X + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
+        X, accepted[i, :] = mala_accept_reject(prop, X, log_w, ms, Sigmas_inv, logdets, gamma)
+        mse_cov[i] = np.mean((np.cov(X) - true_cov)**2)
+        for j in range(d):
+            w1[i, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:])
+    return X, accepted, w1, mse_cov
+def mala_accept_reject(prop, v, log_w, ms, Sigmas_inv, logdets, gamma):
     d = ms[0,:].size
-    log_proposal = multivariate_normal.logpdf((v-(prop+gamma*gradient_mixture(prop, ms, Sigmas, Sigmas_inv, weights))).T, np.zeros(d), 2*gamma*np.eye(d))-multivariate_normal.logpdf((prop - (v+gamma*gradient_mixture(v, ms, Sigmas, Sigmas_inv, weights))).T, np.zeros(d), 2*gamma*np.eye(d))
-    log_acceptance = logpi_mixture(prop, ms, Sigmas, weights) - logpi_mixture(v, ms, Sigmas, weights) + log_proposal
+    log_proposal = multivariate_normal.logpdf((v-(prop+gamma*gradient_mixture(prop, log_w, ms, Sigmas_inv, logdets))).T, np.zeros(d), 2*gamma*np.eye(d))-multivariate_normal.logpdf((prop - (v+gamma*gradient_mixture(v, log_w, ms, Sigmas_inv, logdets))).T, np.zeros(d), 2*gamma*np.eye(d))
+    log_acceptance = logpi_mixture(prop, log_w, ms, Sigmas_inv) - logpi_mixture(v, log_w, ms, Sigmas_inv) + log_proposal
     accepted = np.log(np.random.uniform(size = v.shape[1])) <= log_acceptance
     output = np.copy(v)
     output[:, accepted] = prop[:, accepted]
     return output, accepted
+
+
 ### WFR
 
-def SMC_WFR(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, nmcmc):
+def SMC_WFR(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, true_sample, true_cov, nmcmc):
+    log_w = np.log(weights)
     d = ms[0,:].size
     N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    W = np.zeros((Niter, N))
-    X[0, :] = X0.T
-    W[0, :] = np.ones(N)/N
+    X = X0.T
+    W = np.ones(N)/N
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+    for j in range(d):
+        w1[0, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
     for n in range(1, Niter):
         if (n > 1):
             # resample
-            ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n-1, :, :] = X[n-1, :, ancestors].T
+            ancestors = rs.resampling('stratified', W)
+            X = X[:, ancestors]
         # MCMC move
         if(nmcmc > 1):
-            Xmcmc = np.zeros((nmcmc, d, N))
-            Xmcmc[0, :] = X[n-1, :, :]
+            Xmcmc = X
             for j in range(1, nmcmc):
-                gradient_step = Xmcmc[j-1, :] + gamma*gradient_mixture(Xmcmc[j-1, :], ms, Sigmas, Sigmas_inv, weights)
-                Xmcmc[j, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-            X[n, :] = Xmcmc[nmcmc-1, :]
+                gradient_step = Xmcmc + gamma*gradient_mixture(Xmcmc, log_w, ms, Sigmas_inv, logdets)
+                Xmcmc = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+            X = Xmcmc
         else:
-            gradient_step = X[n-1, :, :] + gamma*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights)
-            X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+            gradient_step = X + gamma*gradient_mixture(X, log_w, ms, Sigmas_inv, logdets)
+            X = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
         # reweight
-#         H = 2*gamma*np.eye(d) #-- original derivation
-#         H = (4/(N*(d+2)))**(2/(d+4))*np.diag(np.var(X[n, :, :], axis = 1)) #-- KDE theory
-#         squared_distances = pdist(X[n, :, :].T)
-#         pairwise_squared_distances = squareform(squared_distances)**2
-#         H = np.median(pairwise_squared_distances)/(2*np.log(N))*np.eye(d) # median euristic
-#         print(H)
-#         gaussian_convolution = multivariate_normal.pdf(np.kron(X[n, :, :].T, np.ones((N, 1))) - np.tile(gradient_step, N).T, np.zeros(d), H).reshape(N, N)
-        gaussian_convolution = metrics.pairwise.rbf_kernel(X[n, :, :].T, gradient_step.T, 1/(4*gamma))
-        weight_denominator = np.mean(gaussian_convolution, axis = 1)
-        logW = (1-np.exp(-gamma))*(logpi_mixture(X[n, :, :], ms, Sigmas, weights)-np.log(weight_denominator))
-        W[n, :] = rs.exp_and_normalise(logW)
-    return X, W
+        distSq = -(1.0 / (4 * gamma))*cdist(X.T, gradient_step.T, metric='sqeuclidean')
+        weight_denominator = logsumexp(distSq, axis=1)
+        logW = (1-np.exp(-gamma))*(logpi_mixture(X, log_w, ms, Sigmas_inv) - weight_denominator)
+        W = rs.exp_and_normalise(logW)
+        mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+        for j in range(d):
+            w1[n, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
+    return X, W, w1, mse_cov
 
-
-def TemperedWFR(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, lseq, delta):
+def SMC_ULA(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, true_sample, true_cov, nmcmc):
+    log_w = np.log(weights)
     d = ms[0,:].size
     N = X0.shape[0]
-    X = np.zeros((Niter+1, d, N))
-    W = np.zeros((Niter+1, N))
-    X[0, :] = X0.T
-    W[0, :] = np.ones(N)/N
-    for n in range(1, Niter+1):
-        if (n > 1):
-            # resample
-            ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n-1, :, :] = X[n-1, :, ancestors].T
-        # MCMC move
-        l = lseq[n-1]
-        gradient_step = X[n-1, :, :] + gamma*(l*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights) - (1-l)*X[n-1, :, :])
-        X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
-        # reweight
-        gaussian_convolution = multivariate_normal.pdf(np.kron(X[n, :, :].T, np.ones((N, 1))) - np.tile(gradient_step, N).T, np.zeros(d), 2*gamma*np.eye(d)).reshape(N, N)
-        weight_denominator = np.mean(gaussian_convolution, axis = 1)
-        logW = delta*(logpi_mixture(X[n, :, :], ms, Sigmas, weights)-np.log(weight_denominator))
-        W[n, :] = rs.exp_and_normalise(logW)
-    return X, W
-
-def SMC_ULA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, nmcmc):
-    d = ms[0,:].size
-    N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    X[0,:,:] = X0.T
-    W = np.zeros((Niter, N))
-    W[0, :] = np.ones(N)/N
+    X = X0.T
+    W = np.ones(N)/N
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+    for j in range(d):
+        w1[0, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
     for n in range(1, Niter):
         if (n > 1):
             # resample
-            ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n-1, :, :] = X[n-1, :, ancestors].T
+            ancestors = rs.resampling('stratified', W)
+            X = X[:, ancestors]
         # MCMC move
         if(nmcmc > 1):
-            Xmcmc = np.zeros((nmcmc, d, N))
-            Xmcmc[0, :] = X[n-1, :, :]
+            Xmcmc = X
             for j in range(1, nmcmc):
-                gradient_step = Xmcmc[j-1, :] + gamma*gradient_mixture(Xmcmc[j-1, :], ms, Sigmas, Sigmas_inv, weights)
-                Xmcmc[j, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-            X[n, :] = Xmcmc[nmcmc-1, :]
+                gradient_step = Xmcmc + gamma*gradient_mixture(Xmcmc, log_w, ms, Sigmas_inv, logdets)
+                Xmcmc = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+            X = Xmcmc
         else:
-            gradient_step = X[n-1, :, :] + gamma*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights)
-            X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+            gradient_step = X + gamma*gradient_mixture(X, log_w, ms, Sigmas_inv, logdets)
+            X = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
         # reweight
         delta = (1-np.exp(-gamma))*np.exp(-(n-1)*gamma)
-        logW = delta*(logpi_mixture(X[n, :, :], ms, Sigmas, weights) +0.5*np.sum(X[n, :, :]**2, axis = 0))
-        W[n, :] = rs.exp_and_normalise(logW)
-    return X, W
+        logW = delta*(logpi_mixture(X, log_w, ms, Sigmas_inv) +0.5*np.sum(X**2, axis = 0))
+        W = rs.exp_and_normalise(logW)
+        mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+        for j in range(d):
+            w1[n, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
+    return X, W, w1, mse_cov
 
-def SMC_MALA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, nmcmc):
+def SMC_MALA(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, true_sample, true_cov, nmcmc):
+    log_w = np.log(weights)
     d = ms[0,:].size
     N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    X[0,:,:] = X0.T
-    W = np.zeros((Niter, N))
-    W[0, :] = np.ones(N)/N
+    X = X0.T
+    W = np.ones(N)/N
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+    for j in range(d):
+        w1[0, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
     if(nmcmc > 1):
         accepted = np.zeros((Niter, N, nmcmc-1))
     else:
@@ -170,60 +222,69 @@ def SMC_MALA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, nmcmc):
     for n in range(1, Niter):
         if (n > 1):
             # resample
-            ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n-1, :, :] = X[n-1, :, ancestors].T
+            ancestors = rs.resampling('stratified', W)
+            X = X[:, ancestors]
         # MCMC move
         if(nmcmc > 1):
-            Xmcmc = np.zeros((nmcmc, d, N))
-            Xmcmc[0, :] = X[n-1, :, :]
+            Xmcmc = X
             for j in range(1, nmcmc):
-                gradient_step = Xmcmc[j-1, :] + gamma*gradient_mixture(Xmcmc[j-1, :], ms, Sigmas, Sigmas_inv, weights)
+                gradient_step = Xmcmc + gamma*gradient_mixture(Xmcmc, log_w, ms, Sigmas_inv, logdets)
                 prop = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-                Xmcmc[j, :], accepted[n, :, j-1] = mala_accept_reject(prop, Xmcmc[j-1, :], ms, Sigmas, Sigmas_inv, weights, gamma)
-            X[n, :] = Xmcmc[nmcmc-1, :]
+                Xmcmc, accepted[n, :, j-1] = mala_accept_reject(prop, Xmcmc, log_w, ms, Sigmas_inv, logdets, gamma)
+            X = Xmcmc
         else:
-            gradient_step = X[n-1, :, :] + gamma*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights)
+            gradient_step = X + gamma*gradient_mixture(X, log_w, ms, Sigmas_inv, logdets)
             prop = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-            X[n, :, :], accepted[n, :] = mala_accept_reject(prop, X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights, gamma)
+            X, accepted[n, :] = mala_accept_reject(prop, X, log_w, ms, Sigmas_inv, logdets, gamma)
         # reweight
         delta = np.exp(-(n-1)*gamma)
-        logW = delta*(logpi_mixture(X[n-1, :, :], ms, Sigmas, weights) +0.5*np.sum(X[n-1, :, :]**2, axis = 0)) - delta*np.exp(-gamma)*(logpi_mixture(X[n, :, :], ms, Sigmas, weights) +0.5*np.sum(X[n, :, :]**2, axis = 0))
-        W[n, :] = rs.exp_and_normalise(logW)
-    return X, W, accepted
+        logW = delta*(logpi_mixture(X, log_w, ms, Sigmas_inv) +0.5*np.sum(X**2, axis = 0)) - delta*np.exp(-gamma)*(logpi_mixture(X, log_w, ms, Sigmas_inv) +0.5*np.sum(X**2, axis = 0))
+        W = rs.exp_and_normalise(logW)
+        mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+        for j in range(d):
+            w1[n, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
+    return X, W, accepted, w1, mse_cov
 
 ### FR
-def SMC_UnitFR(gamma, Niter, ms, Sigmas, weights, X0, nmcmc):
+def SMC_UnitFR(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, true_sample, true_cov, nmcmc):
+    log_w = np.log(weights)
     d = ms[0,:].size
     N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    X[0,:,:] = X0.T
-    W = np.zeros((Niter, N))
-    W[0, :] = np.ones(N)/N
+    X = X0.T
+    W = np.ones(N)/N
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+    for j in range(d):
+        w1[0, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
     for n in range(1, Niter):
         t = gamma*n
         tpast = gamma*(n-1)
         l = 1-np.exp(-t)
         lpast = 1-np.exp(-tpast)
+        Xold = np.copy(X)
         if (n > 1):
             # resample
-            ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n, :, :] = X[n-1, :, ancestors].T
+            ancestors = rs.resampling('stratified', W)
+            X = X[:, ancestors]
         # MCMC move
         if(nmcmc > 1):
-            Xmcmc = np.zeros((nmcmc, d, N))
-            Xmcmc[0, :] = X[n-1, :, :]
+            Xmcmc = np.copy(Xold)
             for j in range(1, nmcmc):
-                prop = rwm_proposal(Xmcmc[j-1, :].T, W[n-1, :]).T
-                Xmcmc[j, :] = rwm_accept_reject(prop, Xmcmc[j-1, :], ms, Sigmas, weights, l)
-            X[n, :] = Xmcmc[nmcmc-1, :]
+                prop = rwm_proposal(Xmcmc.T, W).T
+                Xmcmc = rwm_accept_reject(prop, Xmcmc, ms, Sigmas_inv, log_w, l)
+            X = Xmcmc
         else:
-            prop = rwm_proposal(X[n-1, :, :].T, W[n-1, :]).T
-            X[n, :] = rwm_accept_reject(prop, X[n-1, :, :], ms, Sigmas, weights, l)
+            prop = rwm_proposal(Xold.T, W).T
+            X = rwm_accept_reject(prop, Xold, ms, Sigmas_inv, log_w, l)
         # reweight
         delta = l - lpast
-        logW = delta*(0.5*np.sum(X[n, :, :]**2, axis = 0) + logpi_mixture(X[n, :, :], ms, Sigmas, weights))
-        W[n, :] = rs.exp_and_normalise(logW)
-    return X, W
+        logW = delta*(0.5*np.sum(X**2, axis = 0) + logpi_mixture(X, log_w, ms, Sigmas_inv))
+        W = rs.exp_and_normalise(logW)
+        mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+        for j in range(d):
+            w1[n, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
+    return X, W, w1, mse_cov
 
 
 def view_2d_array(theta):
@@ -243,9 +304,48 @@ def rwm_proposal(v, W):
     L = scale * linalg.cholesky(cov, lower=True)
     arr_prop = arr + stats.norm.rvs(size=arr.shape) @ L.T
     return arr_prop
-def rwm_accept_reject(prop, v, ms, Sigmas, weights, l):
-    log_acceptance = (1-l)*0.5*np.sum(v**2 - prop**2, axis = 0) + l*(logpi_mixture(prop, ms, Sigmas, weights)-logpi_mixture(v, ms, Sigmas, weights))
+def rwm_accept_reject(prop, v, ms, Sigmas_inv, log_w, l):
+    log_acceptance = (1-l)*0.5*np.sum(v**2 - prop**2, axis = 0) + l*(logpi_mixture(prop, log_w, ms, Sigmas_inv)-logpi_mixture(v, log_w, ms, Sigmas_inv))
     accepted = np.log(np.random.uniform(size = v.shape[1])) <= log_acceptance
     output = np.copy(v)
     output[:, accepted] = prop[:, accepted]
     return output
+
+
+
+
+def TemperedULA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, lseq):
+    d = ms[0,:].size
+    N = X0.shape[0]
+    X = np.zeros((Niter+1, d, N))
+    X[0, :, :] = X0.T
+    for i in range(1, Niter+1):
+        l = lseq[i-1]
+        gradient = l*gradient_mixture(X[i-1, :, :], ms, Sigmas, Sigmas_inv, weights) - (1-l)*X[i-1, :, :]
+        X[i, :, :] = X[i-1, :, :] + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
+    return X
+
+
+
+def TemperedWFR(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, lseq, delta):
+    d = ms[0,:].size
+    N = X0.shape[0]
+    X = np.zeros((Niter+1, d, N))
+    W = np.zeros((Niter+1, N))
+    X[0, :] = X0.T
+    W[0, :] = np.ones(N)/N
+    for n in range(1, Niter+1):
+        if (n > 1):
+            # resample
+            ancestors = rs.resampling('stratified', W[n-1, :])
+            X[n-1, :, :] = X[n-1, :, ancestors].T
+        # MCMC move
+        l = lseq[n-1]
+        gradient_step = X[n-1, :, :] + gamma*(l*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights) - (1-l)*X[n-1, :, :])
+        X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
+        # reweight
+        gaussian_convolution = metrics.pairwise.rbf_kernel(X[n, :, :].T, gradient_step.T, 1/(4*gamma))
+        weight_denominator = np.mean(gaussian_convolution, axis = 1)
+        logW = delta*(logpi_mixture(X[n, :, :], ms, Sigmas, weights)-np.log(weight_denominator))
+        W[n, :] = rs.exp_and_normalise(logW)
+    return X, W
