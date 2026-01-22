@@ -109,39 +109,17 @@ def GaussmultiD_FR(m0, C0, mpi, Cpi, t):
 
     return m, C
 
-### WFR Exact weights
-def SMC_WFR_exactW(gamma, Niter, ms, Sigmas, Sigmas_inv, X0, nmcmc):
-    d = ms.size
-    N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    W = np.zeros((Niter, N))
-    X[0, :] = X0.T
-    W[0, :] = np.ones(N)/N
-    m_seq = np.zeros((Niter, d))
-    C_seq = np.zeros((Niter, d, d))
-    C_seq[0, :] = np.eye(d)
-    for n in range(1, Niter):
-        # exact WFR splitting
-        m_tmp, C_tmp = GaussmultiD_Wass(m_seq[n-1, :], C_seq[n-1, :], ms, Sigmas, gamma)
-        m_seq[n, :], C_seq[n, :] = GaussmultiD_FR(m_tmp, C_tmp, ms, Sigmas, gamma)
-        if (n > 1):
-            # resample
-            ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n-1, :, :] = X[n-1, :, ancestors].T
-        # MCMC move
-        if(nmcmc > 1):
-            Xmcmc = np.zeros((nmcmc, d, N))
-            Xmcmc[0, :] = X[n-1, :, :]
-            for j in range(1, nmcmc):
-                gradient_step = Xmcmc[j-1, :] - gamma*np.matmul(Sigmas_inv, (Xmcmc[j-1, :].T-ms).T)
-                Xmcmc[j, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-            X[n, :] = Xmcmc[nmcmc-1, :]
-        else:
-            gradient_step = X[n-1, :, :] - gamma*np.matmul(Sigmas_inv, (X[n-1, :, :].T-ms).T)
-            X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-        logW = (1-np.exp(-gamma))*(logpi_MultiGaussian(X[n, :, :].T, ms, Sigmas_inv)-logpi_MultiGaussian(X[n, :, :].T, m_tmp, linalg.inv(C_tmp)))
-        W[n, :] = rs.exp_and_normalise(logW)
-    return X, W, m_seq, C_seq
+def W_move(ms, Sigmas_inv, X, gamma, noise):
+    gradient = -np.matmul(Sigmas_inv, (X.T-ms).T)
+    gradient_step = X + gamma*gradient
+    Xnew = gradient_step + np.sqrt(2*gamma)*noise
+    return Xnew, gradient_step
+
+def FR_reweigthing(ms, Sigmas_inv, X, gamma, delta, gradient_step):
+    distSq = -(1.0 / (4 * gamma))*cdist(X.T, gradient_step.T, metric='sqeuclidean')
+    weight_denominator = logsumexp(distSq, axis=1)
+    logW = delta*(logpi_MultiGaussian(X.T, ms, Sigmas_inv)-weight_denominator)
+    return rs.exp_and_normalise(logW)
 
 ### ULA
 
@@ -350,3 +328,38 @@ def rwm_accept_reject(prop, v, ms, Sigmas, l):
     output = np.copy(v)
     output[:, accepted] = prop[:, accepted]
     return output
+
+
+### WFR Exact weights
+def SMC_WFR_exactW(gamma, Niter, ms, Sigmas, Sigmas_inv, X0, nmcmc):
+    d = ms.size
+    N = X0.shape[0]
+    X = np.zeros((Niter, d, N))
+    W = np.zeros((Niter, N))
+    X[0, :] = X0.T
+    W[0, :] = np.ones(N)/N
+    m_seq = np.zeros((Niter, d))
+    C_seq = np.zeros((Niter, d, d))
+    C_seq[0, :] = np.eye(d)
+    for n in range(1, Niter):
+        # exact WFR splitting
+        m_tmp, C_tmp = GaussmultiD_Wass(m_seq[n-1, :], C_seq[n-1, :], ms, Sigmas, gamma)
+        m_seq[n, :], C_seq[n, :] = GaussmultiD_FR(m_tmp, C_tmp, ms, Sigmas, gamma)
+        if (n > 1):
+            # resample
+            ancestors = rs.resampling('stratified', W[n-1, :])
+            X[n-1, :, :] = X[n-1, :, ancestors].T
+        # MCMC move
+        if(nmcmc > 1):
+            Xmcmc = np.zeros((nmcmc, d, N))
+            Xmcmc[0, :] = X[n-1, :, :]
+            for j in range(1, nmcmc):
+                gradient_step = Xmcmc[j-1, :] - gamma*np.matmul(Sigmas_inv, (Xmcmc[j-1, :].T-ms).T)
+                Xmcmc[j, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+            X[n, :] = Xmcmc[nmcmc-1, :]
+        else:
+            gradient_step = X[n-1, :, :] - gamma*np.matmul(Sigmas_inv, (X[n-1, :, :].T-ms).T)
+            X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+        logW = (1-np.exp(-gamma))*(logpi_MultiGaussian(X[n, :, :].T, ms, Sigmas_inv)-logpi_MultiGaussian(X[n, :, :].T, m_tmp, linalg.inv(C_tmp)))
+        W[n, :] = rs.exp_and_normalise(logW)
+    return X, W, m_seq, C_seq

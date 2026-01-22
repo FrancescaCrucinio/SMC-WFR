@@ -10,14 +10,6 @@ from scipy.spatial.distance import cdist
 
 
 ### Gradient and other utilities
-# def gradient_mixture(x, ms, Sigmas, Sigmas_inv, weights):
-#     gradient = np.zeros(x.shape)
-#     denominator = np.zeros((weights.size, x.shape[1]))
-#     for j in range(weights.size):
-#         denominator[j, :] = weights[j]*multivariate_normal.pdf(x.T, ms[j,:], Sigmas[j,:,:])
-#         gradient += -denominator[j, :]*np.matmul(Sigmas_inv[j,:,:],(x.T-ms[j,:]).T)
-#     return gradient/np.sum(denominator, axis = 0)
-
 
 def gradient_mixture(x, log_w, mus, invcovs, logdets):
     """
@@ -48,14 +40,7 @@ def gradient_mixture(x, log_w, mus, invcovs, logdets):
 
     return score.T  
 
-# def logpi_mixture(x, ms, Sigmas, weights):
-#     logpi = np.zeros((weights.size, x.shape[1]))
-#     for j in range(weights.size):
-#         logpi[j, :] = weights[j]*multivariate_normal.pdf(x.T, ms[j,:], Sigmas[j,:,:])
-#     return np.log(np.sum(logpi, axis = 0))
-
-
-def logpi_mixture(x, log_w, mus, invcovs):
+def logpi_mixture(x, log_w, mus, invcovs, logdets):
     """
     x:        (d, N)
     log_w:    (K,)
@@ -73,7 +58,7 @@ def logpi_mixture(x, log_w, mus, invcovs):
     quad = np.einsum('nkd,kdj,nkj->nk', diff, invcovs, diff)  # (N,K)
 
     # unnormalized log N_k(x) = -0.5 (x-mu)^T Σ⁻¹ (x-mu)
-    logNk = -0.5 * quad
+    logNk = -0.5 * quad-0.5*d*np.log(2*np.pi)-0.5*logdets
 
     # log-sum-exp with mixture weights
     a = log_w + logNk
@@ -124,7 +109,7 @@ def ParallelMALA(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, tru
 def mala_accept_reject(prop, v, log_w, ms, Sigmas_inv, logdets, gamma):
     d = ms[0,:].size
     log_proposal = multivariate_normal.logpdf((v-(prop+gamma*gradient_mixture(prop, log_w, ms, Sigmas_inv, logdets))).T, np.zeros(d), 2*gamma*np.eye(d))-multivariate_normal.logpdf((prop - (v+gamma*gradient_mixture(v, log_w, ms, Sigmas_inv, logdets))).T, np.zeros(d), 2*gamma*np.eye(d))
-    log_acceptance = logpi_mixture(prop, log_w, ms, Sigmas_inv) - logpi_mixture(v, log_w, ms, Sigmas_inv) + log_proposal
+    log_acceptance = logpi_mixture(prop, log_w, ms, Sigmas_inv, logdets) - logpi_mixture(v, log_w, ms, Sigmas_inv, logdets) + log_proposal
     accepted = np.log(np.random.uniform(size = v.shape[1])) <= log_acceptance
     output = np.copy(v)
     output[:, accepted] = prop[:, accepted]
@@ -162,7 +147,7 @@ def SMC_WFR(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, true_sam
         # reweight
         distSq = -(1.0 / (4 * gamma))*cdist(X.T, gradient_step.T, metric='sqeuclidean')
         weight_denominator = logsumexp(distSq, axis=1)
-        logW = (1-np.exp(-gamma))*(logpi_mixture(X, log_w, ms, Sigmas_inv) - weight_denominator)
+        logW = (1-np.exp(-gamma))*(logpi_mixture(X, log_w, ms, Sigmas_inv, logdets) - weight_denominator)
         W = rs.exp_and_normalise(logW)
         mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
         for j in range(d):
@@ -197,7 +182,7 @@ def SMC_ULA(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, true_sam
             X = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
         # reweight
         delta = (1-np.exp(-gamma))*np.exp(-(n-1)*gamma)
-        logW = delta*(logpi_mixture(X, log_w, ms, Sigmas_inv) +0.5*np.sum(X**2, axis = 0))
+        logW = delta*(logpi_mixture(X, log_w, ms, Sigmas_inv, logdets) +0.5*np.sum(X**2, axis = 0))
         W = rs.exp_and_normalise(logW)
         mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
         for j in range(d):
@@ -238,7 +223,7 @@ def SMC_MALA(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, true_sa
             X, accepted[n, :] = mala_accept_reject(prop, X, log_w, ms, Sigmas_inv, logdets, gamma)
         # reweight
         delta = np.exp(-(n-1)*gamma)
-        logW = delta*(logpi_mixture(X, log_w, ms, Sigmas_inv) +0.5*np.sum(X**2, axis = 0)) - delta*np.exp(-gamma)*(logpi_mixture(X, log_w, ms, Sigmas_inv) +0.5*np.sum(X**2, axis = 0))
+        logW = delta*(logpi_mixture(X, log_w, ms, Sigmas_inv, logdets) +0.5*np.sum(X**2, axis = 0)) - delta*np.exp(-gamma)*(logpi_mixture(X, log_w, ms, Sigmas_inv, logdets) +0.5*np.sum(X**2, axis = 0))
         W = rs.exp_and_normalise(logW)
         mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
         for j in range(d):
@@ -276,10 +261,10 @@ def SMC_UnitFR(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, true_
             X = Xmcmc
         else:
             prop = rwm_proposal(Xold.T, W).T
-            X = rwm_accept_reject(prop, Xold, ms, Sigmas_inv, log_w, l)
+            X = rwm_accept_reject(prop, Xold, ms, Sigmas_inv, log_w, logdets, l)
         # reweight
         delta = l - lpast
-        logW = delta*(0.5*np.sum(X**2, axis = 0) + logpi_mixture(X, log_w, ms, Sigmas_inv))
+        logW = delta*(0.5*np.sum(X**2, axis = 0) + logpi_mixture(X, log_w, ms, Sigmas_inv, logdets))
         W = rs.exp_and_normalise(logW)
         mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
         for j in range(d):
@@ -304,48 +289,9 @@ def rwm_proposal(v, W):
     L = scale * linalg.cholesky(cov, lower=True)
     arr_prop = arr + stats.norm.rvs(size=arr.shape) @ L.T
     return arr_prop
-def rwm_accept_reject(prop, v, ms, Sigmas_inv, log_w, l):
-    log_acceptance = (1-l)*0.5*np.sum(v**2 - prop**2, axis = 0) + l*(logpi_mixture(prop, log_w, ms, Sigmas_inv)-logpi_mixture(v, log_w, ms, Sigmas_inv))
+def rwm_accept_reject(prop, v, ms, Sigmas_inv, log_w, logdets, l):
+    log_acceptance = (1-l)*0.5*np.sum(v**2 - prop**2, axis = 0) + l*(logpi_mixture(prop, log_w, ms, Sigmas_inv, logdets)-logpi_mixture(v, log_w, ms, Sigmas_inv, logdets))
     accepted = np.log(np.random.uniform(size = v.shape[1])) <= log_acceptance
     output = np.copy(v)
     output[:, accepted] = prop[:, accepted]
     return output
-
-
-
-
-def TemperedULA(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, lseq):
-    d = ms[0,:].size
-    N = X0.shape[0]
-    X = np.zeros((Niter+1, d, N))
-    X[0, :, :] = X0.T
-    for i in range(1, Niter+1):
-        l = lseq[i-1]
-        gradient = l*gradient_mixture(X[i-1, :, :], ms, Sigmas, Sigmas_inv, weights) - (1-l)*X[i-1, :, :]
-        X[i, :, :] = X[i-1, :, :] + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
-    return X
-
-
-
-def TemperedWFR(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0, lseq, delta):
-    d = ms[0,:].size
-    N = X0.shape[0]
-    X = np.zeros((Niter+1, d, N))
-    W = np.zeros((Niter+1, N))
-    X[0, :] = X0.T
-    W[0, :] = np.ones(N)/N
-    for n in range(1, Niter+1):
-        if (n > 1):
-            # resample
-            ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n-1, :, :] = X[n-1, :, ancestors].T
-        # MCMC move
-        l = lseq[n-1]
-        gradient_step = X[n-1, :, :] + gamma*(l*gradient_mixture(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights) - (1-l)*X[n-1, :, :])
-        X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
-        # reweight
-        gaussian_convolution = metrics.pairwise.rbf_kernel(X[n, :, :].T, gradient_step.T, 1/(4*gamma))
-        weight_denominator = np.mean(gaussian_convolution, axis = 1)
-        logW = delta*(logpi_mixture(X[n, :, :], ms, Sigmas, weights)-np.log(weight_denominator))
-        W[n, :] = rs.exp_and_normalise(logW)
-    return X, W

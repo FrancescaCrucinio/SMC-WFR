@@ -16,26 +16,38 @@ def logpi_banana(x, sigma):
 
 
 ### W
-def ParallelULA(gamma, Niter, X0, sigma):
+def ParallelULA(gamma, Niter, X0, sigma, true_sample, true_cov):
     d = X0.shape[1]
     N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    X[0, :, :] = X0.T
+    X = X0.T
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X) - true_cov)**2)
+    for j in range(d):
+        w1[0, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:])
     for i in range(1, Niter):
-        gradient = gradient_banana(X[i-1, :, :], sigma)
-        X[i, :, :] = X[i-1, :, :] + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
-    return X
-def ParallelMALA(gamma, Niter, X0, sigma):
+        gradient = gradient_banana(X, sigma)
+        X = X + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
+        mse_cov[i] = np.mean((np.cov(X) - true_cov)**2)
+        for j in range(d):
+            w1[i, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:])
+    return X, w1, mse_cov
+def ParallelMALA(gamma, Niter, X0, sigma, true_sample, true_cov):
     d = X0.shape[1]
     N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    X[0, :, :] = X0.T
+    X = X0.T
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X) - true_cov)**2)
     accepted = np.zeros((Niter, N))
     for i in range(1, Niter):
-        gradient = gradient_banana(X[i-1, :, :], sigma)
-        prop = X[i-1, :, :] + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
-        X[i, :, :], accepted[i, :] = mala_accept_reject(prop, X[i-1, :, :], gamma, sigma)
-    return X, accepted
+        gradient = gradient_banana(X, sigma)
+        prop = X + gamma*gradient + np.sqrt(2*gamma)*np.random.multivariate_normal(np.zeros(d), np.eye(d), size = N).T
+        X, accepted[i, :] = mala_accept_reject(prop, X, gamma, sigma)
+        mse_cov[i] = np.mean((np.cov(X) - true_cov)**2)
+        for j in range(d):
+            w1[i, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:])
+    return X, accepted, w1, mse_cov
 
 def mala_accept_reject(prop, v, gamma, sigma):
     d = prop.shape[0]
@@ -47,100 +59,84 @@ def mala_accept_reject(prop, v, gamma, sigma):
     return output, accepted
 
 ### WFR
-def SMC_WFR(gamma, Niter, X0, sigma, nmcmc):
+def SMC_WFR(gamma, Niter, X0, sigma, true_sample, true_cov, nmcmc):
     d = X0.shape[1]
     N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    X[0,:,:] = X0.T
-    W = np.zeros((Niter, N))
-    W[0, :] = np.ones(N)/N
+    X = X0.T
+    W = np.ones(N)/N
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+    for j in range(d):
+        w1[0, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
     for n in range(1, Niter):
         if (n > 1):
             # resample
-            ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n-1, :, :] = X[n-1, :, ancestors].T
+            ancestors = rs.resampling('stratified', W)
+            X = X[:, ancestors]
         # MCMC move
         if(nmcmc > 1):
-            Xmcmc = np.zeros((nmcmc, d, N))
-            Xmcmc[0, :] = X[n-1, :, :]
+            Xmcmc = X
             for j in range(1, nmcmc):
-                gradient_step = Xmcmc[j-1, :] + gamma*gradient_banana(Xmcmc[j-1, :, :], sigma)
-                Xmcmc[j, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-            X[n, :] = Xmcmc[nmcmc-1, :]
+                gradient_step = Xmcmc + gamma*gradient_banana(Xmcmc, sigma)
+                Xmcmc = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+            X = Xmcmc
         else:
-            gradient_step = X[n-1, :, :] + gamma*gradient_banana(X[n-1, :, :], sigma)
-            X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-        distSq = -(1.0 / (4 * gamma))*cdist(X[n, :, :].T, gradient_step.T, metric='sqeuclidean')
+            gradient_step = X + gamma*gradient_banana(X, sigma)
+            X = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+        distSq = -(1.0 / (4 * gamma))*cdist(X.T, gradient_step.T, metric='sqeuclidean')
         weight_denominator = logsumexp(distSq, axis=1)
-        logW = (1-np.exp(-gamma))*(logpi_banana(X[n, :, :], sigma)-weight_denominator)
-        W[n, :] = rs.exp_and_normalise(logW)
-    return X, W
+        logW = (1-np.exp(-gamma))*(logpi_banana(X, sigma)-weight_denominator)
+        W = rs.exp_and_normalise(logW)
+        mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+        for j in range(d):
+            w1[n, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
+    return X, W, w1, mse_cov
 
-# def SMC_ULA(gamma, Niter, X0, sigma, nmcmc):
-#     d = X0.shape[1]
-#     N = X0.shape[0]
-#     X = np.zeros((Niter, d, N))
-#     X[0,:,:] = X0.T
-#     W = np.zeros((Niter, N))
-#     W[0, :] = np.ones(N)/N
-#     for n in range(1, Niter):
-#         if (n > 1):
-#             # resample
-#             ancestors = rs.resampling('stratified', W[n-1, :])
-#             X[n-1, :, :] = X[n-1, :, ancestors].T
-#         # MCMC move
-#         if(nmcmc > 1):
-#             Xmcmc = np.zeros((nmcmc, d, N))
-#             Xmcmc[0, :] = X[n-1, :, :]
-#             for j in range(1, nmcmc):
-#                 gradient_step = Xmcmc[j-1, :] + gamma*gradient_banana(Xmcmc[j-1, :, :], sigma)
-#                 Xmcmc[j, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-#             X[n, :] = Xmcmc[nmcmc-1, :]
-#         else:
-#             gradient_step = X[n-1, :, :] + gamma*gradient_banana(X[n-1, :, :], sigma)
-#             X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-#         # reweight
-#         delta = (1-np.exp(-gamma))*np.exp(-(n-1)*gamma)
-#         logW = delta*(logpi_banana(X[n, :, :], sigma) +0.5*np.sum(X[n, :, :]**2, axis = 0))
-#         W[n, :] = rs.exp_and_normalise(logW)
-#     return X, W
-
-def SMC_ULA(gamma, Niter, X0, sigma, nmcmc):
+def SMC_ULA(gamma, Niter, X0, sigma, true_sample, true_cov, nmcmc):
     d = X0.shape[1]
     N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    X[0,:,:] = X0.T
-    W = np.zeros((Niter, N))
-    W[0, :] = np.ones(N)/N
+    X = X0.T
+    W = np.ones(N)/N
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+    for j in range(d):
+        w1[0, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
     for n in range(1, Niter):
         if (n > 1):
             # resample
-            ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n-1, :, :] = X[n-1, :, ancestors].T
+            ancestors = rs.resampling('stratified', W)
+            X = X[:, ancestors]
         # MCMC move
         if(nmcmc > 1):
-            Xmcmc = np.zeros((nmcmc, d, N))
-            Xmcmc[0, :] = X[n-1, :, :]
+            Xmcmc = X
             for j in range(1, nmcmc):
-                gradient_step = Xmcmc[j-1, :] + gamma*gradient_banana(Xmcmc[j-1, :, :], sigma)
-                Xmcmc[j, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-            X[n, :] = Xmcmc[nmcmc-1, :]
+                gradient_step = Xmcmc + gamma*gradient_banana(Xmcmc, sigma)
+                Xmcmc = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+            X = Xmcmc
         else:
-            gradient_step = X[n-1, :, :] + gamma*gradient_banana(X[n-1, :, :], sigma)
-            X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
+            gradient_step = X + gamma*gradient_banana(X, sigma)
+            X = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
         # reweight
         delta = (1-np.exp(-gamma))*np.exp(-(n-1)*gamma)
-        logW = delta*(logpi_banana(X[n, :, :], sigma) +0.5*np.sum(X[n, :, :]**2, axis = 0))
-        W[n, :] = rs.exp_and_normalise(logW)
-    return X, W
+        logW = delta*(logpi_banana(X, sigma) +0.5*np.sum(X**2, axis = 0))
+        W = rs.exp_and_normalise(logW)
+        mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+        for j in range(d):
+            w1[n, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
+    return X, W, w1, mse_cov
 
-def SMC_MALA(gamma, Niter, X0, sigma, nmcmc):
+def SMC_MALA(gamma, Niter, X0, sigma, true_sample, true_cov, nmcmc):
     d = X0.shape[1]
     N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    X[0,:,:] = X0.T
-    W = np.zeros((Niter, N))
-    W[0, :] = np.ones(N)/N
+    X = X0.T
+    W = np.ones(N)/N
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+    for j in range(d):
+        w1[0, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
     if(nmcmc > 1):
         accepted = np.zeros((Niter, N, nmcmc-1))
     else:
@@ -148,60 +144,68 @@ def SMC_MALA(gamma, Niter, X0, sigma, nmcmc):
     for n in range(1, Niter):
         if (n > 1):
             # resample
-            ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n-1, :, :] = X[n-1, :, ancestors].T
+            ancestors = rs.resampling('stratified', W)
+            X = X[:, ancestors]
         # MCMC move
         if(nmcmc > 1):
-            Xmcmc = np.zeros((nmcmc, d, N))
-            Xmcmc[0, :] = X[n-1, :, :]
+            Xmcmc = X
             for j in range(1, nmcmc):
-                gradient_step = Xmcmc[j-1, :] + gamma*gradient_banana(Xmcmc[j-1, :, :], sigma)
+                gradient_step = Xmcmc + gamma*gradient_banana(Xmcmc, sigma)
                 prop = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-                Xmcmc[j, :], accepted[n, :, j-1] = mala_accept_reject(prop, Xmcmc[j-1, :], gamma, sigma)
-            X[n, :] = Xmcmc[nmcmc-1, :]
+                Xmcmc, accepted[n, :, j-1] = mala_accept_reject(prop, Xmcmc, gamma, sigma)
+            X = Xmcmc
         else:
-            gradient_step = X[n-1, :, :] + gamma*gradient_banana(X[n-1, :, :], sigma)
+            gradient_step = X + gamma*gradient_banana(X, sigma)
             prop = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
-            X[n, :, :], accepted[n, :] = mala_accept_reject(prop, X[n-1, :, :], gamma, sigma)
+            X, accepted[n, :] = mala_accept_reject(prop, X, gamma, sigma)
         # reweight
         delta = np.exp(-(n-1)*gamma)
-        logW = delta*(logpi_banana(X[n-1, :, :], sigma) +0.5*np.sum(X[n-1, :, :]**2, axis = 0)) - delta*np.exp(-gamma)*(logpi_banana(X[n, :, :], sigma) +0.5*np.sum(X[n, :, :]**2, axis = 0))
-        W[n, :] = rs.exp_and_normalise(logW)
-    return X, W, accepted
+        logW = delta*(logpi_banana(X, sigma) +0.5*np.sum(X**2, axis = 0)) - delta*np.exp(-gamma)*(logpi_banana(X, sigma) +0.5*np.sum(X**2, axis = 0))
+        W = rs.exp_and_normalise(logW)
+        mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+        for j in range(d):
+            w1[n, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
+    return X, W, accepted, w1, mse_cov
 
 ### FR
-def SMC_FR(gamma, Niter, X0, sigma, nmcmc):
+def SMC_FR(gamma, Niter, X0, sigma, true_sample, true_cov, nmcmc):
     d = X0.shape[1]
     N = X0.shape[0]
-    X = np.zeros((Niter, d, N))
-    X[0,:,:] = X0.T
-    W = np.zeros((Niter, N))
-    W[0, :] = np.ones(N)/N
+    X = X0.T
+    W = np.ones(N)/N
+    w1 = np.zeros((Niter, d))
+    mse_cov = np.zeros(Niter)
+    mse_cov[0] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+    for j in range(d):
+        w1[0, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
     for n in range(1, Niter):
         t = gamma*n
         tpast = gamma*(n-1)
         l = 1-np.exp(-t)
         lpast = 1-np.exp(-tpast)
+        Xold = np.copy(X)
         if (n > 1):
             # resample
-            ancestors = rs.resampling('stratified', W[n-1, :])
-            X[n, :, :] = X[n-1, :, ancestors].T
+            ancestors = rs.resampling('stratified', W)
+            X = X[:, ancestors]
         # MCMC move
         if(nmcmc > 1):
-            Xmcmc = np.zeros((nmcmc, d, N))
-            Xmcmc[0, :] = X[n-1, :, :]
+            Xmcmc = Xold
             for j in range(1, nmcmc):
-                prop = rwm_proposal(Xmcmc[j-1, :].T, W[n-1, :]).T
-                Xmcmc[j, :] = rwm_accept_reject(prop, Xmcmc[j-1, :], l, sigma)
-            X[n, :] = Xmcmc[nmcmc-1, :]
+                prop = rwm_proposal(Xmcmc.T, W).T
+                Xmcmc = rwm_accept_reject(prop, Xmcmc, l, sigma)
+            X = Xmcmc
         else:
-            prop = rwm_proposal(X[n-1, :, :].T, W[n-1, :]).T
-            X[n, :] = rwm_accept_reject(prop, X[n-1, :, :], l, sigma)
+            prop = rwm_proposal(Xold.T, W).T
+            X = rwm_accept_reject(prop, Xold, l, sigma)
         # reweight
         delta = l - lpast
-        logW = delta*(0.5*np.sum(X[n, :, :]**2, axis = 0) + logpi_banana(X[n, :, :], sigma))
-        W[n, :] = rs.exp_and_normalise(logW)
-    return X, W
+        logW = delta*(0.5*np.sum(X**2, axis = 0) + logpi_banana(X, sigma))
+        W = rs.exp_and_normalise(logW)
+        mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)
+        for j in range(d):
+            w1[n, j] = stats.wasserstein_distance(X[j,:], true_sample[j,:], u_weights = W)
+    return X, W, w1, mse_cov
 
 
 def view_2d_array(theta):
