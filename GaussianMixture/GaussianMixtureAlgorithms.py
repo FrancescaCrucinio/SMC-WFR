@@ -145,8 +145,23 @@ def SMC_WFR(gamma, Niter, ms, Sigmas, Sigmas_inv, logdets, weights, X0, true_sam
             gradient_step = X + gamma*gradient_mixture(X, log_w, ms, Sigmas_inv, logdets)
             X = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
         # reweight
+#         M = int(N/2)  # choose any M <= N
+
+#         idx = np.argpartition(
+#             np.random.random((N, N)),
+#             M - 1,
+#             axis=1
+#         )[:, :M]
+
+#         distSq = -(1.0 / (4 * gamma)) * np.sum(
+#             (X[:, :, None] - gradient_step[:, idx])**2,
+#             axis=0
+#         )
+
+#         weight_denominator = logsumexp(distSq, axis=1) - np.log(M)
         distSq = -(1.0 / (4 * gamma))*cdist(X.T, gradient_step.T, metric='sqeuclidean')
-        weight_denominator = logsumexp(distSq, axis=1)
+        # weight_denominator = logsumexp(distSq, axis=1)
+        weight_denominator = logsumexp(distSq + np.log(W)[None, :], axis=1)
         logW = (1-np.exp(-gamma))*(logpi_mixture(X, log_w, ms, Sigmas_inv, logdets) - weight_denominator)
         W = rs.exp_and_normalise(logW)
         mse_cov[n] = np.mean((np.cov(X, aweights = W, bias = True) - true_cov)**2)

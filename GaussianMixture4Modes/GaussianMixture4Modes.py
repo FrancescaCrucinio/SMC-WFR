@@ -87,7 +87,8 @@ def SMC_WFR(gamma, Niter, ms, Sigmas, Sigmas_inv, weights, X0):
         gradient_step = X[n-1, :, :] + gamma*gradient_4modes(X[n-1, :, :], ms, Sigmas, Sigmas_inv, weights)
         X[n, :, :] = gradient_step + np.sqrt(2*gamma)*np.random.normal(size = (d, N))
         distSq = -(1.0 / (4 * gamma))*cdist(X[n, :, :].T, gradient_step.T, metric='sqeuclidean')
-        weight_denominator = logsumexp(distSq, axis=1)
+        # weight_denominator = logsumexp(distSq, axis=1)
+        weight_denominator = logsumexp(distSq + np.log(W[n-1, :])[None, :], axis=1)
         logW = (1-np.exp(-gamma))*(logpi_4modes(X[n, :, :], ms, Sigmas, weights)-weight_denominator)
         W[n, :] = rs.exp_and_normalise(logW)
     return X, W
